@@ -81,6 +81,9 @@ async def match_tender(
 
         return result
 
+    except HTTPException:
+        # Пробрасываем HTTPException дальше
+        raise
     except TenderProcessingException as e:
         logger.error(f"Error processing tender: {e}")
         raise HTTPException(status_code=422, detail=str(e))

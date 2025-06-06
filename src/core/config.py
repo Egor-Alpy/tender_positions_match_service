@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     unique_mongo_direct_connection: bool = False
     unique_mongodb_database: str = "unique_products"
     unique_collection_name: str = "unique_products"
+    unique_mongo_replica_set: Optional[str] = None  # Имя replica set
 
     # Processing settings
     min_match_score: float = 0.5  # Минимальный score для включения в результаты
@@ -35,18 +36,41 @@ class Settings(BaseSettings):
     def unique_mongodb_connection_string(self) -> str:
         """Строка подключения для Unique Products MongoDB"""
         if self.unique_mongo_user and self.unique_mongo_pass:
-            connection_string = (
-                f"mongodb://{self.unique_mongo_user}:{quote_plus(self.unique_mongo_pass)}@"
-                f"{self.unique_mongo_host}:{self.unique_mongo_port}"
-            )
+            # Кодируем пароль для URL
+            from urllib.parse import quote_plus
+            encoded_password = quote_plus(self.unique_mongo_pass)
 
-            if self.unique_mongo_authsource:
-                connection_string += f"/{self.unique_mongo_authsource}"
-                connection_string += f"?authMechanism={self.unique_mongo_authmechanism}"
+            # Для прямого подключения используем упрощенную строку
+            if self.unique_mongo_direct_connection:
+                # Простая строка без указания БД в пути
+                connection_string = (
+                    f"mongodb://{self.unique_mongo_user}:{encoded_password}@"
+                    f"{self.unique_mongo_host}:{self.unique_mongo_port}/"
+                    f"?authSource={self.unique_mongo_authsource or 'admin'}"
+                    f"&directConnection=true"
+                )
             else:
-                connection_string += f"/?authMechanism={self.unique_mongo_authmechanism}"
+                # Стандартная строка подключения
+                connection_string = (
+                    f"mongodb://{self.unique_mongo_user}:{encoded_password}@"
+                    f"{self.unique_mongo_host}:{self.unique_mongo_port}/"
+                    f"{self.unique_mongodb_database}"
+                )
+
+                # Добавляем параметры
+                params = []
+                if self.unique_mongo_authsource:
+                    params.append(f"authSource={self.unique_mongo_authsource}")
+                params.append(f"authMechanism={self.unique_mongo_authmechanism}")
+
+                if self.unique_mongo_replica_set:
+                    params.append(f"replicaSet={self.unique_mongo_replica_set}")
+                    params.append("readPreference=primaryPreferred")
+
+                if params:
+                    connection_string += "?" + "&".join(params)
         else:
-            connection_string = f"mongodb://{self.unique_mongo_host}:{self.unique_mongo_port}"
+            connection_string = f"mongodb://{self.unique_mongo_host}:{self.unique_mongo_port}/{self.unique_mongodb_database}"
 
         return connection_string
 

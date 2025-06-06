@@ -12,23 +12,21 @@ services:
       - SERVICE_NAME=tender_matching_service
       - SERVICE_PORT=8002
 
-      # Unique Products MongoDB
-      - UNIQUE_MONGO_HOST=mongodb
-      - UNIQUE_MONGO_PORT=27017
-      - UNIQUE_MONGO_USER=${MONGO_USER}
-      - UNIQUE_MONGO_PASS=${MONGO_PASS}
-      - UNIQUE_MONGODB_DATABASE=unique_products
-      - UNIQUE_COLLECTION_NAME=unique_products
+      # External MongoDB connection
+      - UNIQUE_MONGO_HOST=${UNIQUE_MONGO_HOST}
+      - UNIQUE_MONGO_PORT=${UNIQUE_MONGO_PORT}
+      - UNIQUE_MONGO_USER=${UNIQUE_MONGO_USER}
+      - UNIQUE_MONGO_PASS=${UNIQUE_MONGO_PASS}
+      - UNIQUE_MONGO_AUTHSOURCE=${UNIQUE_MONGO_AUTHSOURCE:-admin}
+      - UNIQUE_MONGO_AUTHMECHANISM=${UNIQUE_MONGO_AUTHMECHANISM:-SCRAM-SHA-256}
+      - UNIQUE_MONGODB_DATABASE=${UNIQUE_MONGODB_DATABASE}
+      - UNIQUE_COLLECTION_NAME=${UNIQUE_COLLECTION_NAME}
 
       # Processing settings
       - MIN_MATCH_SCORE=${MIN_MATCH_SCORE:-0.5}
-      - MAX_MATCHED_PRODUCTS_PER_ITEM=${MAX_MATCHED_PRODUCTS_PER_ITEM:-10}
+      - MAX_MATCHED_PRODUCTS_PER_ITEM=${MAX_MATCHED_PRODUCTS_PER_ITEM:-20}
       - PRICE_TOLERANCE_PERCENT=${PRICE_TOLERANCE_PERCENT:-20.0}
 
-    depends_on:
-      - mongodb
-    networks:
-      - tender-network
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped
@@ -38,45 +36,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-
-  mongodb:
-    image: mongo:6.0
-    container_name: tender-mongodb
-    environment:
-      - MONGO_INITDB_ROOT_USERNAME=${MONGO_USER:-admin}
-      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_PASS:-password}
-      - MONGO_INITDB_DATABASE=unique_products
-    volumes:
-      - mongo-data:/data/db
-    networks:
-      - tender-network
-    restart: unless-stopped
-    ports:
-      - "27017:27017"  # Для доступа снаружи (опционально)
-
-  # Опциональный Mongo Express для просмотра БД
-  mongo-express:
-    image: mongo-express:latest
-    container_name: tender-mongo-express
-    environment:
-      - ME_CONFIG_MONGODB_ADMINUSERNAME=${MONGO_USER:-admin}
-      - ME_CONFIG_MONGODB_ADMINPASSWORD=${MONGO_PASS:-password}
-      - ME_CONFIG_MONGODB_URL=mongodb://${MONGO_USER:-admin}:${MONGO_PASS:-password}@mongodb:27017/
-      - ME_CONFIG_BASICAUTH_USERNAME=${MONGO_EXPRESS_USER:-admin}
-      - ME_CONFIG_BASICAUTH_PASSWORD=${MONGO_EXPRESS_PASS:-admin}
-    ports:
-      - "8081:8081"
-    depends_on:
-      - mongodb
-    networks:
-      - tender-network
-    restart: unless-stopped
-    profiles:
-      - debug
-
-networks:
-  tender-network:
-    driver: bridge
-
-volumes:
-  mongo-data:
