@@ -11,12 +11,13 @@ class Settings(BaseSettings):
     unique_mongo_port: int = 27017
     unique_mongo_user: Optional[str] = None
     unique_mongo_pass: Optional[str] = None
-    unique_mongo_authsource: Optional[str] = None
+    unique_mongo_authsource: Optional[str] = "admin"
     unique_mongo_authmechanism: str = "SCRAM-SHA-256"
-    unique_mongo_direct_connection: bool = False
+    unique_mongo_direct_connection: bool = True  # Изменено на True для прямого подключения
     unique_mongodb_database: str = "unique_products"
     unique_collection_name: str = "unique_products"
     unique_mongo_replica_set: Optional[str] = None  # Имя replica set
+    unique_mongo_timeout: int = 10000  # Увеличен таймаут до 10 секунд
 
     # Processing settings
     min_match_score: float = 0.5  # Минимальный score для включения в результаты
@@ -37,40 +38,45 @@ class Settings(BaseSettings):
         """Строка подключения для Unique Products MongoDB"""
         if self.unique_mongo_user and self.unique_mongo_pass:
             # Кодируем пароль для URL
-            from urllib.parse import quote_plus
             encoded_password = quote_plus(self.unique_mongo_pass)
+            encoded_user = quote_plus(self.unique_mongo_user)
 
             # Для прямого подключения используем упрощенную строку
             if self.unique_mongo_direct_connection:
-                # Простая строка без указания БД в пути
+                # Простая строка с прямым подключением
                 connection_string = (
-                    f"mongodb://{self.unique_mongo_user}:{encoded_password}@"
+                    f"mongodb://{encoded_user}:{encoded_password}@"
                     f"{self.unique_mongo_host}:{self.unique_mongo_port}/"
                     f"?authSource={self.unique_mongo_authsource or 'admin'}"
+                    f"&authMechanism={self.unique_mongo_authmechanism}"
                     f"&directConnection=true"
+                    f"&serverSelectionTimeoutMS={self.unique_mongo_timeout}"
+                    f"&connectTimeoutMS={self.unique_mongo_timeout}"
                 )
             else:
-                # Стандартная строка подключения
+                # Строка для replica set
                 connection_string = (
-                    f"mongodb://{self.unique_mongo_user}:{encoded_password}@"
+                    f"mongodb://{encoded_user}:{encoded_password}@"
                     f"{self.unique_mongo_host}:{self.unique_mongo_port}/"
-                    f"{self.unique_mongodb_database}"
+                    f"?authSource={self.unique_mongo_authsource or 'admin'}"
+                    f"&authMechanism={self.unique_mongo_authmechanism}"
                 )
 
-                # Добавляем параметры
-                params = []
-                if self.unique_mongo_authsource:
-                    params.append(f"authSource={self.unique_mongo_authsource}")
-                params.append(f"authMechanism={self.unique_mongo_authmechanism}")
-
                 if self.unique_mongo_replica_set:
-                    params.append(f"replicaSet={self.unique_mongo_replica_set}")
-                    params.append("readPreference=primaryPreferred")
+                    connection_string += f"&replicaSet={self.unique_mongo_replica_set}"
+                    connection_string += "&readPreference=primaryPreferred"
 
-                if params:
-                    connection_string += "?" + "&".join(params)
+                connection_string += f"&serverSelectionTimeoutMS={self.unique_mongo_timeout}"
+                connection_string += f"&connectTimeoutMS={self.unique_mongo_timeout}"
         else:
-            connection_string = f"mongodb://{self.unique_mongo_host}:{self.unique_mongo_port}/{self.unique_mongodb_database}"
+            # Без аутентификации
+            connection_string = f"mongodb://{self.unique_mongo_host}:{self.unique_mongo_port}/"
+
+            if self.unique_mongo_direct_connection:
+                connection_string += "?directConnection=true"
+
+            connection_string += f"&serverSelectionTimeoutMS={self.unique_mongo_timeout}"
+            connection_string += f"&connectTimeoutMS={self.unique_mongo_timeout}"
 
         return connection_string
 
