@@ -2,12 +2,16 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 import re
+import asyncio
+import time
+from functools import lru_cache
 
 from src.models.tender import (
     TenderRequest, TenderItem, TenderItemMatch,
     MatchedProduct, MatchedSupplier, TenderMatchingResult
 )
 from src.storage.unique_products_mongo import UniqueProductsMongoStore
+from src.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,44 +21,7 @@ class TenderMatchingService:
 
     def __init__(self, unique_products_store: UniqueProductsMongoStore):
         self.unique_products_store = unique_products_store
-
-        # Маппинг типов характеристик для нормализации
-        self.characteristic_mappings = {
-            # Размеры
-            "Ширина": ["ширина", "width"],
-            "Длина": ["длина", "length", "длина намотки"],
-            "Высота": ["высота", "height"],
-            "Толщина": ["толщина", "thickness"],
-            "Диаметр": ["диаметр", "diameter"],
-
-            # Вес и объем
-            "Масса": ["масса", "вес", "weight", "mass"],
-            "Объем": ["объем", "объём", "volume"],
-            "Плотность": ["плотность", "density", "плотность картона"],
-
-            # Цвет и материал
-            "Цвет": ["цвет", "color", "colour"],
-            "Материал": ["материал", "material"],
-            "Тип": ["тип", "вид", "type"],
-
-            # Прочие
-            "Количество": ["количество", "кол-во", "count", "quantity"],
-            "Прозрачность": ["прозрачность", "transparency"],
-            "Формат": ["формат", "format"],
-            "Механизм": ["механизм", "mechanism"]
-        }
-
-    def normalize_characteristic_name(self, name: str) -> str:
-        """Нормализовать название характеристики"""
-        name_lower = name.lower().strip()
-
-        # Ищем соответствие в маппинге
-        for standard_name, variations in self.characteristic_mappings.items():
-            if any(var in name_lower for var in variations):
-                return standard_name
-
-        # Если не нашли - возвращаем как есть, но нормализованное
-        return name_lower.replace("_", " ").replace("-", " ")
+        self._okpd2_cache = {} if settings.enable_okpd2_cache else None
 
     def parse_numeric_condition(self, value: str) -> Tuple[str, float, Optional[float]]:
         """
@@ -136,7 +103,7 @@ class TenderMatchingService:
         total_score = 0.0
 
         # 1. Проверяем OKPD2 код (обязательное условие)
-        if not product['okpd2_code'].startswith(tender_item.okpd2Code):
+        if not tender_item.okpd2Code or not product['okpd2_code'].startswith(tender_item.okpd2Code):
             return 0.0, {
                 "matched": False,
                 "reason": "OKPD2 code mismatch",
@@ -144,14 +111,24 @@ class TenderMatchingService:
                 "product_okpd2": product['okpd2_code']
             }
 
-        # 2. Сопоставляем характеристики
+        # Если нет характеристик у товара - базовое совпадение по OKPD2
+        if not tender_item.characteristics:
+            return 0.5, {  # Базовый score 50% только за совпадение OKPD2
+                "matched_attributes": [],
+                "missing_attributes": [],
+                "total_required": 0,
+                "total_matched": 0,
+                "note": "No characteristics to match, OKPD2 match only"
+            }
+
+        # 2. Сопоставляем характеристики (БЕЗ НОРМАЛИЗАЦИИ - уже стандартизированы)
         tender_chars = {
-            self.normalize_characteristic_name(ch.name): ch
+            ch.name: ch  # Используем имя как есть
             for ch in tender_item.characteristics
         }
 
         product_attrs = {
-            self.normalize_characteristic_name(attr.get('standard_name', '')): attr
+            attr.get('standard_name', ''): attr
             for attr in product.get('standardized_attributes', [])
         }
 
@@ -165,7 +142,7 @@ class TenderMatchingService:
 
                 # Сравниваем значения
                 if tender_char.type == "Количественная":
-                    if self.check_numeric_match(tender_char.value, product_attr.get('standard_value', '')):
+                    if self.check_numeric_match(tender_char.value, str(product_attr.get('standard_value', ''))):
                         matched_attributes.append({
                             "name": char_name,
                             "tender_value": tender_char.value,
@@ -181,10 +158,10 @@ class TenderMatchingService:
                             "reason": "value mismatch"
                         })
                 else:  # Качественная
-                    tender_val = tender_char.value.lower().strip()
-                    product_val = str(product_attr.get('standard_value', '')).lower().strip()
+                    tender_val = str(tender_char.value).strip()
+                    product_val = str(product_attr.get('standard_value', '')).strip()
 
-                    if tender_val == product_val or "эквивалент" in tender_val:
+                    if tender_val == product_val or "эквивалент" in tender_val.lower():
                         matched_attributes.append({
                             "name": char_name,
                             "tender_value": tender_char.value,
@@ -219,15 +196,101 @@ class TenderMatchingService:
             "total_matched": len(matched_attributes)
         }
 
+    async def find_products_by_okpd2_with_fallback(
+            self,
+            okpd2_code: str,
+            min_results: int = 5,
+            max_results: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Интеллектуальный поиск товаров по OKPD2 с расширением области поиска
+        """
+        # Проверяем кэш
+        if self._okpd2_cache is not None and okpd2_code in self._okpd2_cache:
+            cached_data, cache_time = self._okpd2_cache[okpd2_code]
+            if (datetime.utcnow() - cache_time).total_seconds() < settings.okpd2_cache_ttl:
+                logger.debug(f"Using cached results for OKPD2 {okpd2_code}")
+                return cached_data
+
+        # Разбираем код OKPD2 на части
+        okpd2_parts = okpd2_code.split('.')
+
+        # Убираем КТРУ часть если есть
+        okpd2_base = okpd2_code
+        if '-' in okpd2_code:
+            okpd2_base, ktru_part = okpd2_code.split('-', 1)
+            okpd2_parts = okpd2_base.split('.')
+
+        # Строим иерархию поиска от точного к широкому
+        search_patterns = []
+
+        # 1. Точное совпадение (с КТРУ если есть)
+        search_patterns.append(okpd2_code)
+
+        # 2. Без КТРУ части
+        if '-' in okpd2_code:
+            search_patterns.append(okpd2_base)
+
+        # 3. По уровням иерархии OKPD2 (если включен fallback)
+        if settings.okpd2_fallback_enabled:
+            if len(okpd2_parts) >= 3 and settings.okpd2_search_depth >= 3:
+                # Уровень подгруппы (9 цифр)
+                search_patterns.append('.'.join(okpd2_parts[:3]))
+
+            if len(okpd2_parts) >= 2 and settings.okpd2_search_depth >= 2:
+                # Уровень группы (6 цифр)
+                search_patterns.append('.'.join(okpd2_parts[:2]))
+
+            if len(okpd2_parts) >= 1 and settings.okpd2_search_depth >= 1:
+                # Уровень подкласса (4 цифры)
+                search_patterns.append(okpd2_parts[0])
+
+        # Ищем, расширяя область поиска при необходимости
+        all_products = []
+        used_patterns = []
+
+        for pattern in search_patterns:
+            if len(all_products) >= min_results:
+                break
+
+            logger.debug(f"Searching with pattern: {pattern}")
+
+            products = await self.unique_products_store.find_products(
+                filters={"okpd2_code": {"$regex": f"^{pattern}"}},
+                limit=max_results - len(all_products)
+            )
+
+            # Добавляем только новые товары (по product_hash)
+            existing_hashes = {p['product_hash'] for p in all_products}
+            new_products = [p for p in products if p['product_hash'] not in existing_hashes]
+
+            if new_products:
+                all_products.extend(new_products)
+                used_patterns.append(pattern)
+                logger.info(f"Found {len(new_products)} products with pattern '{pattern}'")
+
+        # Логируем результат поиска
+        logger.info(
+            f"OKPD2 search complete: '{okpd2_code}' -> {len(all_products)} products "
+            f"(patterns used: {used_patterns})"
+        )
+
+        # Сохраняем в кэш
+        if self._okpd2_cache is not None:
+            self._okpd2_cache[okpd2_code] = (all_products[:max_results], datetime.utcnow())
+
+        return all_products[:max_results]
+
     async def match_tender_item(self, tender_item: TenderItem) -> TenderItemMatch:
         """Найти подходящие товары для позиции тендера"""
         try:
             logger.info(f"Matching tender item {tender_item.id}: {tender_item.name}")
 
-            # 1. Ищем товары с таким же OKPD2 кодом
-            products = await self.unique_products_store.find_products(
-                filters={"okpd2_code": {"$regex": f"^{tender_item.okpd2Code}"}},
-                limit=100
+            # Используем улучшенный поиск с fallback
+            products = await self.find_products_by_okpd2_with_fallback(
+                okpd2_code=tender_item.okpd2Code,
+                min_results=settings.min_products_for_matching,
+                max_results=settings.max_matched_products_per_item * 10
             )
 
             if not products:
@@ -242,14 +305,14 @@ class TenderMatchingService:
                     processing_status="no_matches"
                 )
 
-            # 2. Оцениваем каждый найденный товар
+            # Оцениваем каждый найденный товар
             matched_products = []
 
             for product in products:
                 match_score, match_details = self.calculate_match_score(tender_item, product)
 
                 # Пропускаем товары с низким score
-                if match_score < 0.5:  # Минимум 50% совпадений
+                if match_score < settings.min_match_score:
                     continue
 
                 # Подготавливаем информацию о поставщиках
@@ -272,8 +335,12 @@ class TenderMatchingService:
                     supplier_score = match_score
                     if best_price and tender_price > 0:
                         price_ratio = best_price / tender_price
-                        if price_ratio <= 1.0:  # Цена не выше тендерной
-                            supplier_score *= (2.0 - price_ratio)  # Бонус за низкую цену
+                        # Применяем допустимое отклонение цены из настроек
+                        max_price_ratio = 1 + (settings.price_tolerance_percent / 100)
+
+                        if price_ratio <= max_price_ratio:
+                            # Бонус за низкую цену (чем ниже цена, тем выше бонус)
+                            supplier_score *= (2.0 - price_ratio / max_price_ratio)
 
                     matched_suppliers.append(MatchedSupplier(
                         supplier_key=supplier.get('supplier_key', ''),
@@ -305,8 +372,8 @@ class TenderMatchingService:
             # Сортируем товары по score
             matched_products.sort(key=lambda x: x.match_score, reverse=True)
 
-            # Берем топ-10 лучших совпадений
-            matched_products = matched_products[:10]
+            # Берем топ N лучших совпадений из настроек
+            matched_products = matched_products[:settings.max_matched_products_per_item]
 
             return TenderItemMatch(
                 tender_item_id=tender_item.id,
@@ -319,7 +386,7 @@ class TenderMatchingService:
             )
 
         except Exception as e:
-            logger.error(f"Error matching tender item {tender_item.id}: {e}")
+            logger.error(f"Error matching tender item {tender_item.id}: {e}", exc_info=True)
             return TenderItemMatch(
                 tender_item_id=tender_item.id,
                 tender_item_name=tender_item.name,
@@ -331,23 +398,23 @@ class TenderMatchingService:
                 error_message=str(e)
             )
 
-    async def process_tender(self, tender_request: TenderRequest) -> TenderMatchingResult:
-        """Обработать весь тендер"""
-        logger.info(f"Processing tender {tender_request.tenderInfo.tenderNumber}")
+    async def process_tender_sequential(self, tender_request: TenderRequest) -> TenderMatchingResult:
+        """Последовательная обработка тендера (для небольших тендеров)"""
+        logger.info(f"Processing tender {tender_request.tenderInfo.tenderNumber} (sequential mode)")
         start_time = datetime.utcnow()
 
         # Обрабатываем каждый товар
         item_matches = []
         for item in tender_request.items:
-            if item.quantity == 0:  # Пропускаем товары с нулевым количеством
-                logger.debug(f"Skipping item {item.id} with zero quantity")
+            if not item.okpd2Code:  # Пропускаем товары без OKPD2
+                logger.debug(f"Skipping item {item.id} without OKPD2 code")
                 continue
 
             match_result = await self.match_tender_item(item)
             item_matches.append(match_result)
 
         # Подсчитываем статистику
-        total_items = len([item for item in tender_request.items if item.quantity > 0])
+        total_items = len([item for item in tender_request.items if item.okpd2Code])
         matched_items = sum(1 for m in item_matches if m.total_matches > 0)
 
         # Формируем сводку
@@ -374,3 +441,114 @@ class TenderMatchingService:
             item_matches=item_matches,
             summary=summary
         )
+
+    async def process_tender_parallel(self, tender_request: TenderRequest) -> TenderMatchingResult:
+        """Параллельная обработка тендера (для больших тендеров)"""
+        logger.info(f"Processing tender {tender_request.tenderInfo.tenderNumber} (parallel mode)")
+        start_time = datetime.utcnow()
+
+        # Фильтруем товары с OKPD2
+        valid_items = [item for item in tender_request.items if item.okpd2Code]
+
+        if not valid_items:
+            return TenderMatchingResult(
+                tender_number=tender_request.tenderInfo.tenderNumber,
+                tender_name=tender_request.tenderInfo.tenderName,
+                processing_time=datetime.utcnow(),
+                total_items=0,
+                matched_items=0,
+                item_matches=[],
+                summary={"error": "No valid items to process"}
+            )
+
+        # Определяем размер батчей для параллельной обработки
+        batch_size = min(settings.max_parallel_items, len(valid_items))
+
+        # Обрабатываем батчами
+        all_matches = []
+
+        for i in range(0, len(valid_items), batch_size):
+            batch = valid_items[i:i + batch_size]
+            batch_start = time.time()
+
+            # Создаем задачи для параллельного выполнения
+            tasks = [self.match_tender_item(item) for item in batch]
+
+            # Выполняем параллельно
+            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Обрабатываем результаты
+            for idx, result in enumerate(batch_results):
+                if isinstance(result, Exception):
+                    logger.error(f"Error processing item {batch[idx].id}: {result}")
+                    # Создаем результат с ошибкой
+                    all_matches.append(TenderItemMatch(
+                        tender_item_id=batch[idx].id,
+                        tender_item_name=batch[idx].name,
+                        okpd2_code=batch[idx].okpd2Code,
+                        matched_products=[],
+                        total_matches=0,
+                        best_match_score=0.0,
+                        processing_status="error",
+                        error_message=str(result)
+                    ))
+                else:
+                    all_matches.append(result)
+
+            batch_time = time.time() - batch_start
+            logger.info(f"Processed batch {i // batch_size + 1}: {len(batch)} items in {batch_time:.2f}s")
+
+            # Небольшая задержка между батчами для снижения нагрузки
+            if i + batch_size < len(valid_items):
+                await asyncio.sleep(0.1)
+
+        # Подсчитываем статистику
+        total_items = len(valid_items)
+        matched_items = sum(1 for m in all_matches if m.total_matches > 0)
+
+        # Формируем сводку
+        processing_time = (datetime.utcnow() - start_time).total_seconds()
+
+        summary = {
+            "total_suppliers": sum(
+                sum(p.total_suppliers for p in m.matched_products)
+                for m in all_matches
+            ),
+            "average_match_score": sum(m.best_match_score for m in all_matches) / len(
+                all_matches) if all_matches else 0,
+            "items_with_perfect_match": sum(1 for m in all_matches if m.best_match_score >= 0.9),
+            "items_with_good_match": sum(1 for m in all_matches if 0.7 <= m.best_match_score < 0.9),
+            "items_with_partial_match": sum(1 for m in all_matches if 0.5 <= m.best_match_score < 0.7),
+            "items_without_match": sum(1 for m in all_matches if m.best_match_score == 0),
+            "items_with_errors": sum(1 for m in all_matches if m.processing_status == "error"),
+            "processing_duration_seconds": processing_time,
+            "items_per_second": total_items / processing_time if processing_time > 0 else 0,
+            "parallel_batch_size": batch_size
+        }
+
+        logger.info(
+            f"Tender processed in {processing_time:.2f}s "
+            f"({summary['items_per_second']:.1f} items/sec)"
+        )
+
+        return TenderMatchingResult(
+            tender_number=tender_request.tenderInfo.tenderNumber,
+            tender_name=tender_request.tenderInfo.tenderName,
+            processing_time=datetime.utcnow(),
+            total_items=total_items,
+            matched_items=matched_items,
+            item_matches=all_matches,
+            summary=summary
+        )
+
+    async def process_tender(self, tender_request: TenderRequest) -> TenderMatchingResult:
+        """Обработать весь тендер"""
+        # Определяем режим обработки
+        items_count = len([item for item in tender_request.items if item.okpd2Code])
+
+        # Используем параллельную обработку для больших тендеров
+        if settings.enable_parallel_processing and items_count > settings.max_parallel_items:
+            return await self.process_tender_parallel(tender_request)
+        else:
+            # Обычная последовательная обработка для небольших тендеров
+            return await self.process_tender_sequential(tender_request)

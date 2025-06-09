@@ -20,14 +20,15 @@ class TenderItem(BaseModel):
     """Товар в тендере"""
     id: int
     name: str
-    okpd2Code: str = Field(..., alias="okpd2Code")
-    ktruCode: str = Field(..., alias="ktruCode")
-    quantity: int
-    unitOfMeasurement: str
+    okpd2Code: str = Field(default="", alias="okpd2Code")  # Может быть пустым
+    ktruCode: str = Field(default="", alias="ktruCode")  # Может быть пустым
+    quantity: int = 0  # По умолчанию 0
+    unitOfMeasurement: str = ""  # По умолчанию пустая строка
     unitPrice: Dict[str, Any]
     totalPrice: Dict[str, Any]
-    characteristics: List[TenderCharacteristic] = []
+    characteristics: List[TenderCharacteristic] = Field(default_factory=list)  # Пустой список по умолчанию
     additionalRequirements: Optional[str] = None
+    okpd2Name: Optional[str] = None  # Добавлено поле для имени OKPD2
 
     class Config:
         populate_by_name = True

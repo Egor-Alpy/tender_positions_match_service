@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
-from typing import Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Body
+from typing import Dict, Any, Union
 import logging
 
 from src.api.dependencies import verify_api_key
@@ -33,7 +33,7 @@ async def get_tender_matching_service(
 
 @router.post("/match", response_model=TenderMatchingResult)
 async def match_tender(
-        tender_request: TenderRequest,
+        request_body: Dict[str, Any] = Body(...),  # Принимаем любой JSON
         tender_service=Depends(get_tender_matching_service),
         api_key: str = Depends(verify_api_key)
 ):
@@ -43,30 +43,75 @@ async def match_tender(
     Принимает данные тендера и возвращает результат сопоставления
     с подходящими товарами и поставщиками из базы данных.
 
+    Поддерживает два формата:
+    1. Прямой формат: {"tenderInfo": {...}, "items": [...]}
+    2. Обернутый формат: {"tender": {"tenderInfo": {...}, "items": [...]}}
+
     Parameters:
-    - tender_request: Данные тендера включая информацию о тендере и список товаров
+    - request_body: Данные тендера в одном из поддерживаемых форматов
 
     Returns:
     - TenderMatchingResult: Результат сопоставления с найденными товарами и поставщиками
     """
     try:
+        # Извлекаем данные тендера если они обернуты
+        if "tender" in request_body:
+            tender_data = request_body["tender"]
+            logger.info("Extracted tender data from wrapper")
+        else:
+            tender_data = request_body
+
+        # Создаем объект TenderRequest
+        try:
+            tender_request = TenderRequest(**tender_data)
+        except Exception as e:
+            logger.error(f"Error parsing tender data: {e}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid tender data format: {str(e)}"
+            )
+
         logger.info(f"Processing tender {tender_request.tenderInfo.tenderNumber}")
 
-        # Валидация входных данных
         if not tender_request.items:
             raise HTTPException(
                 status_code=400,
                 detail="Tender must contain at least one item"
             )
 
-        # Фильтруем товары с нулевым количеством
-        valid_items = [item for item in tender_request.items if item.quantity > 0]
+        # Фильтруем товары:
+        # 1. Убираем товары без OKPD2 или с пустым OKPD2
+        # 2. Убираем дубликаты по ID
+        valid_items = []
+        seen_ids = set()
+
+        for item in tender_request.items:
+            # Пропускаем если уже видели этот ID
+            if item.id in seen_ids:
+                logger.debug(f"Skipping duplicate item with id {item.id}")
+                continue
+
+            # Пропускаем если нет OKPD2 или он пустой
+            if not item.okpd2Code or item.okpd2Code.strip() == "":
+                logger.warning(f"Skipping item {item.id} '{item.name}' - empty OKPD2 code")
+                continue
+
+            seen_ids.add(item.id)
+            valid_items.append(item)
 
         if not valid_items:
             raise HTTPException(
                 status_code=400,
-                detail="Tender must contain at least one item with quantity > 0"
+                detail="Tender must contain at least one item with valid OKPD2 code"
             )
+
+        # Логируем статистику
+        logger.info(
+            f"Tender items: total={len(tender_request.items)}, "
+            f"valid={len(valid_items)}, "
+            f"skipped_no_okpd2={len([i for i in tender_request.items if not i.okpd2Code or i.okpd2Code.strip() == ''])}, "
+            f"skipped_duplicates={len(tender_request.items) - len(seen_ids)}"
+        )
 
         # Обновляем запрос только валидными товарами
         tender_request.items = valid_items

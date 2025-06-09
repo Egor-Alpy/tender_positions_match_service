@@ -13,11 +13,11 @@ class Settings(BaseSettings):
     unique_mongo_pass: Optional[str] = None
     unique_mongo_authsource: Optional[str] = "admin"
     unique_mongo_authmechanism: str = "SCRAM-SHA-256"
-    unique_mongo_direct_connection: bool = True  # Изменено на True для прямого подключения
+    unique_mongo_direct_connection: bool = True  # Для прямого подключения
     unique_mongodb_database: str = "unique_products"
     unique_collection_name: str = "unique_products"
     unique_mongo_replica_set: Optional[str] = None  # Имя replica set
-    unique_mongo_timeout: int = 10000  # Увеличен таймаут до 10 секунд
+    unique_mongo_timeout: int = 10000  # Таймаут в миллисекундах
 
     # Processing settings
     min_match_score: float = 0.5  # Минимальный score для включения в результаты
@@ -32,6 +32,26 @@ class Settings(BaseSettings):
     price_tolerance_percent: float = 20.0  # Допустимое отклонение цены в %
     enable_fuzzy_matching: bool = False  # Включить нечеткое сопоставление
     fuzzy_match_threshold: float = 0.8  # Порог для нечеткого сопоставления
+
+    # OKPD2 search settings
+    okpd2_search_depth: int = 3  # До какого уровня иерархии искать (1-3)
+    okpd2_fallback_enabled: bool = True  # Расширять поиск при малом количестве результатов
+    min_products_for_matching: int = 5  # Минимум товаров для расширения поиска
+    okpd2_exact_match_weight: float = 2.0  # Вес для точного совпадения OKPD2
+
+    # Performance settings
+    enable_parallel_processing: bool = True  # Параллельная обработка товаров
+    max_parallel_items: int = 10  # Максимум параллельных задач
+
+    # Cache settings
+    enable_okpd2_cache: bool = True
+    okpd2_cache_ttl: int = 3600  # Время жизни кэша в секундах (1 час)
+    okpd2_cache_size: int = 1000  # Размер LRU кэша
+
+    # Logging settings
+    log_level: str = "INFO"
+    log_to_file: bool = True
+    log_file_path: str = "logs/tender_matching.log"
 
     @property
     def unique_mongodb_connection_string(self) -> str:
