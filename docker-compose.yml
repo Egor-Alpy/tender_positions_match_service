@@ -1,17 +1,18 @@
 version: '3.8'
 
 services:
-  tender-matching:
+  api:
+    container_name: tender_positions_match_service
     build: .
-    container_name: tender-matching-service
     ports:
-      - "8002:8002"
+      - "8002:8000"
+    env_file:
+      - .env
     environment:
       # API
       - API_KEY=${API_KEY}
-      - SERVICE_NAME=tender_matching_service
-      - SERVICE_PORT=8002
 
+      - SERVICE_PORT=8000
       # External MongoDB connection
       - UNIQUE_MONGO_HOST=${UNIQUE_MONGO_HOST}
       - UNIQUE_MONGO_PORT=${UNIQUE_MONGO_PORT}
@@ -26,13 +27,13 @@ services:
       - MIN_MATCH_SCORE=${MIN_MATCH_SCORE:-0.5}
       - MAX_MATCHED_PRODUCTS_PER_ITEM=${MAX_MATCHED_PRODUCTS_PER_ITEM:-20}
       - PRICE_TOLERANCE_PERCENT=${PRICE_TOLERANCE_PERCENT:-20.0}
+    networks:
+      - tender-services
 
     volumes:
       - ./logs:/app/logs
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
+
+networks:
+  tender-services:
+    external: true

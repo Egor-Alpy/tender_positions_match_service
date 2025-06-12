@@ -265,10 +265,6 @@ curl -X POST http://localhost:8002/api/v1/tenders/match \
 - stdout (консоль)
 - `logs/tender_matching_YYYYMMDD.log` (файлы с ротацией)
 
-Рекомендуемые инструменты мониторинга:
-- Prometheus + Grafana для метрик
-- ELK Stack для логов
-- Sentry для ошибок
 
 ## Производительность
 

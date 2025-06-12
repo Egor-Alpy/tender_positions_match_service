@@ -26,7 +26,7 @@ class Settings(BaseSettings):
     # API settings
     api_key: Optional[str] = None  # Если не указан - проверка отключена
     service_name: str = "tender_matching_service"
-    service_port: int = 8002
+    service_port: int = 8000
 
     # Matching settings
     price_tolerance_percent: float = 20.0  # Допустимое отклонение цены в %
