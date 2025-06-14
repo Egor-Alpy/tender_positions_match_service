@@ -11,6 +11,9 @@ from src.models.tender import (
     MatchedProduct, MatchedSupplier, TenderMatchingResult
 )
 from src.storage.unique_products_mongo import UniqueProductsMongoStore
+from src.services.term_extractor import TenderTermExtractor
+from src.services.semantic_search import SemanticSearchService
+from src.services.attribute_matcher import EnhancedAttributeMatcher
 from src.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -22,6 +25,23 @@ class TenderMatchingService:
     def __init__(self, unique_products_store: UniqueProductsMongoStore):
         self.unique_products_store = unique_products_store
         self._okpd2_cache = {} if settings.enable_okpd2_cache else None
+
+        # Инициализируем новые компоненты если включены
+        self.enable_semantic_search = getattr(settings, 'enable_semantic_search', False)
+        self.semantic_threshold = getattr(settings, 'semantic_threshold', 0.35)
+        self.max_semantic_candidates = getattr(settings, 'max_semantic_candidates', 200)
+
+        if self.enable_semantic_search:
+            try:
+                self.term_extractor = TenderTermExtractor()
+                self.semantic_service = SemanticSearchService()
+                self.attribute_matcher = EnhancedAttributeMatcher()
+                logger.info("Семантический поиск включен")
+            except Exception as e:
+                logger.warning(f"Не удалось инициализировать семантический поиск: {e}")
+                self.enable_semantic_search = False
+        else:
+            logger.info("Семантический поиск отключен")
 
     def parse_numeric_condition(self, value: str) -> Tuple[str, float, Optional[float]]:
         """
@@ -98,6 +118,20 @@ class TenderMatchingService:
         Рассчитать степень соответствия товара требованиям тендера
         Возвращает: (score, match_details)
         """
+
+        # Если включен улучшенный матчер - используем его
+        if self.enable_semantic_search and hasattr(self, 'attribute_matcher'):
+            match_result = self.attribute_matcher.match_characteristics(
+                tender_item.dict(),
+                product
+            )
+
+            if match_result['is_suitable']:
+                return match_result['match_score'], match_result
+            else:
+                return 0.0, match_result
+
+        # Иначе используем старую логику
         matched_attributes = []
         missing_attributes = []
         total_score = 0.0
@@ -283,6 +317,16 @@ class TenderMatchingService:
 
     async def match_tender_item(self, tender_item: TenderItem) -> TenderItemMatch:
         """Найти подходящие товары для позиции тендера"""
+
+        # Если семантический поиск включен - используем улучшенный алгоритм
+        if self.enable_semantic_search and hasattr(self, 'term_extractor'):
+            return await self._match_tender_item_enhanced(tender_item)
+
+        # Иначе используем стандартный алгоритм
+        return await self._match_tender_item_standard(tender_item)
+
+    async def _match_tender_item_standard(self, tender_item: TenderItem) -> TenderItemMatch:
+        """Стандартный алгоритм поиска (оригинальный)"""
         try:
             logger.info(f"Matching tender item {tender_item.id}: {tender_item.name}")
 
@@ -350,7 +394,7 @@ class TenderMatchingService:
                         supplier_offers=supplier.get('supplier_offers', []),
                         purchase_url=supplier.get('purchase_url'),
                         match_score=supplier_score,
-                        matched_attributes=[attr['name'] for attr in match_details['matched_attributes']]
+                        matched_attributes=[attr['name'] for attr in match_details.get('matched_attributes', [])]
                     ))
 
                 # Сортируем поставщиков по score
@@ -398,6 +442,171 @@ class TenderMatchingService:
                 error_message=str(e)
             )
 
+    async def _match_tender_item_enhanced(self, tender_item: TenderItem) -> TenderItemMatch:
+        """Улучшенный алгоритм с семантическим поиском"""
+
+        start_time = time.time()
+        processing_stats = {}
+
+        try:
+            logger.info(f"Enhanced matching for item {tender_item.id}: {tender_item.name}")
+
+            # ЭТАП 1: Извлечение терминов
+            search_terms = self.term_extractor.extract_from_tender_item(tender_item.dict())
+            processing_stats['search_query'] = search_terms['search_query']
+            processing_stats['weighted_terms_count'] = len(search_terms['weighted_terms'])
+
+            # ЭТАП 2: Расширенный поиск в БД
+            # Проверяем поддержку расширенного поиска
+            if hasattr(self.unique_products_store, 'find_products_enhanced'):
+                products = await self.unique_products_store.find_products_enhanced(
+                    okpd2_code=tender_item.okpd2Code,
+                    search_terms=search_terms.get('all_terms', []),
+                    weighted_terms=search_terms.get('weighted_terms', {}),
+                    limit=1000
+                )
+            else:
+                # Fallback на стандартный поиск
+                products = await self.find_products_by_okpd2_with_fallback(
+                    okpd2_code=tender_item.okpd2Code,
+                    min_results=100,
+                    max_results=1000
+                )
+
+            processing_stats['candidates_found'] = len(products)
+
+            if not products:
+                logger.warning(f"No products found for enhanced search")
+                return TenderItemMatch(
+                    tender_item_id=tender_item.id,
+                    tender_item_name=tender_item.name,
+                    okpd2_code=tender_item.okpd2Code,
+                    matched_products=[],
+                    total_matches=0,
+                    best_match_score=0.0,
+                    processing_status="no_matches",
+                    processing_stats=processing_stats
+                )
+
+            # ЭТАП 3: Семантическая фильтрация
+            if len(products) > 50:
+                products = await self.semantic_service.compute_similarities(
+                    tender_item.dict(),
+                    products
+                )
+
+                products = self.semantic_service.filter_by_similarity(
+                    products,
+                    threshold=self.semantic_threshold,
+                    top_k=self.max_semantic_candidates
+                )
+
+                products = self.semantic_service.combine_scores(products)
+                processing_stats['after_semantic_filter'] = len(products)
+
+            # ЭТАП 4: Точное сопоставление
+            matched_products = []
+
+            for product in products[:100]:
+                match_score, match_details = self.calculate_match_score(tender_item, product)
+
+                if match_score >= settings.min_match_score:
+                    # Комбинированный скор
+                    semantic_score = product.get('semantic_score', 0.5)
+                    text_score = product.get('weighted_score', 0.5)
+
+                    final_score = (
+                            0.4 * match_score +  # Характеристики
+                            0.3 * text_score +  # Текстовое совпадение
+                            0.3 * semantic_score  # Семантическая близость
+                    )
+
+                    # Обрабатываем поставщиков
+                    matched_suppliers = []
+                    for supplier in product.get('unique_suppliers', []):
+                        tender_price = tender_item.unitPrice.get('amount', 0)
+                        best_price = self._get_best_supplier_price(supplier)
+
+                        supplier_score = final_score
+                        if best_price and tender_price > 0:
+                            price_ratio = best_price / tender_price
+                            max_ratio = 1 + (settings.price_tolerance_percent / 100)
+
+                            if price_ratio <= max_ratio:
+                                supplier_score *= (2.0 - price_ratio / max_ratio)
+
+                        matched_suppliers.append(MatchedSupplier(
+                            supplier_key=supplier.get('supplier_key', ''),
+                            supplier_name=supplier.get('supplier_name', ''),
+                            supplier_tel=supplier.get('supplier_tel'),
+                            supplier_address=supplier.get('supplier_address'),
+                            supplier_offers=supplier.get('supplier_offers', []),
+                            purchase_url=supplier.get('purchase_url'),
+                            match_score=supplier_score,
+                            matched_attributes=[
+                                attr['name'] for attr in match_details.get('matched_attributes', [])
+                            ] if isinstance(match_details, dict) else []
+                        ))
+
+                    matched_suppliers.sort(key=lambda x: x.match_score, reverse=True)
+
+                    # Добавляем детали в match_details
+                    if isinstance(match_details, dict):
+                        match_details['text_score'] = text_score
+                        match_details['semantic_score'] = semantic_score
+                        match_details['final_score'] = final_score
+
+                    matched_products.append(MatchedProduct(
+                        product_hash=product['product_hash'],
+                        okpd2_code=product['okpd2_code'],
+                        okpd2_name=product.get('okpd2_name', ''),
+                        sample_title=product.get('sample_title'),
+                        sample_brand=product.get('sample_brand'),
+                        standardized_attributes=product.get('standardized_attributes', []),
+                        matched_suppliers=matched_suppliers,
+                        total_suppliers=len(matched_suppliers),
+                        match_score=final_score,
+                        match_details=match_details
+                    ))
+
+            # Сортируем и ограничиваем
+            matched_products.sort(key=lambda x: x.match_score, reverse=True)
+            matched_products = matched_products[:settings.max_matched_products_per_item]
+
+            processing_stats['matched_products'] = len(matched_products)
+            processing_stats['processing_time'] = time.time() - start_time
+
+            return TenderItemMatch(
+                tender_item_id=tender_item.id,
+                tender_item_name=tender_item.name,
+                okpd2_code=tender_item.okpd2Code,
+                matched_products=matched_products,
+                total_matches=len(matched_products),
+                best_match_score=matched_products[0].match_score if matched_products else 0.0,
+                processing_status="success",
+                processing_stats=processing_stats
+            )
+
+        except Exception as e:
+            logger.error(f"Error in enhanced matching: {e}", exc_info=True)
+            # Fallback на стандартный алгоритм
+            return await self._match_tender_item_standard(tender_item)
+
+    def _get_best_supplier_price(self, supplier: Dict[str, Any]) -> Optional[float]:
+        """Получить лучшую цену поставщика"""
+
+        best_price = None
+
+        for offer in supplier.get('supplier_offers', []):
+            if isinstance(offer, dict) and 'price' in offer:
+                for price_info in offer['price']:
+                    if isinstance(price_info, dict) and 'price' in price_info:
+                        price = price_info['price']
+                        if best_price is None or price < best_price:
+                            best_price = price
+
+        return best_price
+
     async def process_tender_sequential(self, tender_request: TenderRequest) -> TenderMatchingResult:
         """Последовательная обработка тендера (для небольших тендеров)"""
         logger.info(f"Processing tender {tender_request.tenderInfo.tenderNumber} (sequential mode)")
@@ -431,6 +640,28 @@ class TenderMatchingService:
             "items_without_match": sum(1 for m in item_matches if m.best_match_score == 0),
             "processing_duration_seconds": (datetime.utcnow() - start_time).total_seconds()
         }
+
+        # Добавляем информацию о семантическом поиске если включен
+        if self.enable_semantic_search:
+            summary["semantic_search_enabled"] = True
+            summary["algorithm_version"] = "enhanced"
+
+            # Собираем статистику по семантике
+            total_analyzed = sum(
+                m.processing_stats.get('candidates_found', 0)
+                for m in item_matches
+                if hasattr(m, 'processing_stats') and m.processing_stats
+            )
+
+            total_filtered = sum(
+                m.processing_stats.get('after_semantic_filter', 0)
+                for m in item_matches
+                if hasattr(m, 'processing_stats') and m.processing_stats
+            )
+
+            if total_analyzed > 0:
+                summary["total_products_analyzed"] = total_analyzed
+                summary["total_semantic_filtered"] = total_filtered
 
         return TenderMatchingResult(
             tender_number=tender_request.tenderInfo.tenderNumber,

@@ -29,12 +29,36 @@ class UniqueProductsMongoStore:
         self.db: AsyncIOMotorDatabase = self.client[database_name]
         self.collection = self.db[collection_name]
         self._connected = False
+        self._text_index_created = False
 
     async def initialize(self):
         """Инициализация хранилища"""
         self._connected = await self.test_connection()
         if not self._connected:
             logger.warning("Working without MongoDB connection - will return empty results")
+            return
+
+        # Проверяем/создаем индексы
+        await self._check_indexes()
+
+    async def _check_indexes(self):
+        """Проверить наличие индексов"""
+        try:
+            # Проверяем существующие индексы
+            indexes = await self.collection.list_indexes().to_list(length=None)
+
+            # Проверяем наличие текстового индекса
+            for index in indexes:
+                if 'textIndexVersion' in index:
+                    self._text_index_created = True
+                    logger.info("Текстовый индекс обнаружен")
+                    break
+
+            if not self._text_index_created:
+                logger.info("Текстовый индекс не найден. Рекомендуется создать для улучшения поиска.")
+
+        except Exception as e:
+            logger.warning(f"Ошибка проверки индексов: {e}")
 
     async def find_by_hash(self, product_hash: str) -> Optional[Dict[str, Any]]:
         """Найти товар по хешу"""
@@ -79,6 +103,139 @@ class UniqueProductsMongoStore:
         except Exception as e:
             logger.error(f"Error finding products: {e}")
             return []
+
+    async def find_products_enhanced(
+            self,
+            okpd2_code: Optional[str] = None,
+            search_terms: Optional[List[str]] = None,
+            weighted_terms: Optional[Dict[str, float]] = None,
+            limit: int = 100,
+            skip: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Расширенный поиск товаров с текстовым поиском"""
+
+        if not self._connected:
+            return []
+
+        try:
+            # Строим запрос
+            query = {}
+
+            # 1. Фильтр по OKPD2
+            if okpd2_code:
+                query["okpd2_code"] = {"$regex": f"^{okpd2_code}"}
+
+            # 2. Текстовый поиск если индекс создан
+            if search_terms and self._text_index_created:
+                # Формируем поисковую строку
+                search_query = ' '.join(search_terms[:10])  # Ограничиваем количество терминов
+                query["$text"] = {"$search": search_query}
+
+                # Проекция с текстовым скором
+                cursor = self.collection.find(
+                    query,
+                    {"score": {"$meta": "textScore"}}
+                ).sort([("score", {"$meta": "textScore"})])
+            else:
+                # Обычный поиск без текстового индекса
+                if search_terms and not self._text_index_created:
+                    # Используем regex для поиска в названии
+                    title_conditions = []
+                    for term in search_terms[:5]:  # Ограничиваем количество
+                        title_conditions.append({
+                            "$or": [
+                                {"sample_title": {"$regex": term, "$options": "i"}},
+                                {"sample_brand": {"$regex": term, "$options": "i"}},
+                                {"okpd2_name": {"$regex": term, "$options": "i"}}
+                            ]
+                        })
+
+                    if title_conditions:
+                        if query:
+                            query = {"$and": [query] + title_conditions}
+                        else:
+                            query = {"$and": title_conditions}
+
+                cursor = self.collection.find(query)
+                cursor = cursor.sort("unique_suppliers_count", -1)
+
+            # Применяем пагинацию
+            cursor = cursor.skip(skip).limit(limit)
+
+            products = await cursor.to_list(length=limit)
+
+            # Обрабатываем результаты
+            for product in products:
+                product["_id"] = str(product["_id"])
+
+                # Добавляем текстовый скор если есть
+                if "score" in product:
+                    product["text_search_score"] = product.pop("score")
+                else:
+                    product["text_search_score"] = 0.0
+
+                # Рассчитываем взвешенный скор если переданы веса
+                if weighted_terms:
+                    weighted_score = self._calculate_weighted_score(product, weighted_terms)
+                    product["weighted_score"] = weighted_score
+
+            # Сортируем по взвешенному скору если он есть
+            if weighted_terms:
+                products.sort(key=lambda x: x.get("weighted_score", 0), reverse=True)
+
+            logger.debug(f"Найдено товаров (enhanced): {len(products)}")
+
+            return products
+
+        except Exception as e:
+            logger.error(f"Ошибка расширенного поиска: {e}")
+            # Fallback на обычный поиск
+            return await self.find_products(filters={"okpd2_code": {"$regex": f"^{okpd2_code}"}}, limit=limit)
+
+    def _calculate_weighted_score(self, product: Dict[str, Any],
+                                  weighted_terms: Dict[str, float]) -> float:
+        """Рассчитать взвешенный скор для товара"""
+
+        score = 0.0
+        matched_terms = set()
+
+        # Проверяем название
+        title = product.get('sample_title', '').lower()
+        for term, weight in weighted_terms.items():
+            if term.lower() in title and term not in matched_terms:
+                score += weight * 2.0  # Двойной вес для совпадения в названии
+                matched_terms.add(term)
+
+        # Проверяем бренд
+        brand = product.get('sample_brand', '').lower()
+        for term, weight in weighted_terms.items():
+            if term.lower() in brand and term not in matched_terms:
+                score += weight * 1.5
+                matched_terms.add(term)
+
+        # Проверяем OKPD2 название
+        okpd2_name = product.get('okpd2_name', '').lower()
+        for term, weight in weighted_terms.items():
+            if term.lower() in okpd2_name and term not in matched_terms:
+                score += weight * 1.2
+                matched_terms.add(term)
+
+        # Проверяем стандартизированные атрибуты
+        for attr in product.get('standardized_attributes', []):
+            attr_name = attr.get('standard_name', '').lower()
+            attr_value = str(attr.get('standard_value', '')).lower()
+
+            for term, weight in weighted_terms.items():
+                term_lower = term.lower()
+                if term not in matched_terms:
+                    if term_lower in attr_name:
+                        score += weight * 0.8
+                        matched_terms.add(term)
+                    elif term_lower in attr_value:
+                        score += weight * 1.0
+                        matched_terms.add(term)
+
+        return score
 
     async def find_by_original_product(self, original_mongo_id: str) -> Optional[Dict[str, Any]]:
         """Найти уникальный товар по ID исходного товара"""
@@ -160,7 +317,8 @@ class UniqueProductsMongoStore:
             return {
                 "total_unique_products": total_count,
                 "by_okpd_class": okpd_stats,
-                "deduplication_rate": 0  # Не можем рассчитать без полной статистики
+                "deduplication_rate": 0,  # Не можем рассчитать без полной статистики
+                "text_index_available": self._text_index_created
             }
 
         except Exception as e:

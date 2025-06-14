@@ -105,6 +105,8 @@ class TenderItemMatch(BaseModel):
     best_match_score: float
     processing_status: str = "success"  # success, no_matches, error
     error_message: Optional[str] = None
+    processing_stats: Optional[Dict[str, Any]] = None  # Статистика обработки
+    processing_stats: Optional[Dict[str, Any]] = None  # Статистика обработки
 
 
 class TenderMatchingResult(BaseModel):

@@ -43,6 +43,20 @@ class Settings(BaseSettings):
     enable_parallel_processing: bool = True  # Параллельная обработка товаров
     max_parallel_items: int = 10  # Максимум параллельных задач
 
+    # Semantic search settings
+    enable_semantic_search: bool = True
+    semantic_model: str = "intfloat/multilingual-e5-base"
+    semantic_threshold: float = 0.35
+    semantic_batch_size: int = 64
+    max_semantic_candidates: int = 200
+
+    # Semantic search settings
+    enable_semantic_search: bool = True
+    semantic_model: str = "intfloat/multilingual-e5-base"
+    semantic_threshold: float = 0.35
+    semantic_batch_size: int = 64
+    max_semantic_candidates: int = 200
+
     # Cache settings
     enable_okpd2_cache: bool = True
     okpd2_cache_ttl: int = 3600  # Время жизни кэша в секундах (1 час)
