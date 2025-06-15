@@ -106,29 +106,33 @@ class TenderTermExtractor:
         }
 
         # Из названия
-        name = tender_item.get('name', '')
-        if name:
+        name = tender_item.get('name')
+        if name is not None:
+            name = str(name)
             terms['name_terms'] = self._clean_and_filter(name)
             self.logger.debug(f"Из названия: {terms['name_terms']}")
 
         # Из характеристик
         for char in tender_item.get('characteristics', []):
-            char_name = char.get('name', '')
-            char_value = str(char.get('value', ''))
+            char_name = char.get('name')
+            char_value = char.get('value')
             is_required = char.get('required', False)
 
             # Названия характеристик
-            if char_name:
+            if char_name is not None:
+                char_name = str(char_name)
                 char_name_terms = self._clean_and_filter(char_name)
                 terms['char_names'].extend(char_name_terms)
 
             # Значения характеристик (не числовые диапазоны)
-            if char_value and not self._is_numeric_range(char_value):
-                value_terms = self._clean_and_filter(char_value)
-                if is_required:
-                    terms['required_values'].extend(value_terms)
-                else:
-                    terms['optional_values'].extend(value_terms)
+            if char_value is not None:
+                char_value = str(char_value)
+                if not self._is_numeric_range(char_value):
+                    value_terms = self._clean_and_filter(char_value)
+                    if is_required:
+                        terms['required_values'].extend(value_terms)
+                    else:
+                        terms['optional_values'].extend(value_terms)
 
         # Удаляем дубликаты
         for key in terms:
@@ -264,8 +268,14 @@ class TenderTermExtractor:
         result['all_terms'] = list(all_terms_set)
 
         # Отладочная информация
+        tender_name = tender_item.get('name')
+        if tender_name is None:
+            tender_name = ''
+        else:
+            tender_name = str(tender_name)
+
         result['debug_info'] = {
-            'tender_name': tender_item.get('name', ''),
+            'tender_name': tender_name,
             'total_characteristics': len(tender_item.get('characteristics', [])),
             'required_characteristics': sum(1 for c in tender_item.get('characteristics', [])
                                             if c.get('required', False)),

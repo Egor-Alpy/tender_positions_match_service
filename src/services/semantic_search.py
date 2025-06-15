@@ -42,22 +42,35 @@ class SemanticSearchService:
         parts = []
 
         # Название товара
-        name = tender_item.get('name', '').strip()
-        if name:
-            parts.append(f"Товар: {name}")
+        name = tender_item.get('name')
+        if name is not None:
+            name = str(name).strip()
+            if name:
+                parts.append(f"Товар: {name}")
 
         # OKPD2 название для контекста
-        okpd2_name = tender_item.get('okpd2Name', '').strip()
-        if okpd2_name and okpd2_name != name:
-            parts.append(f"Категория: {okpd2_name}")
+        okpd2_name = tender_item.get('okpd2Name')
+        if okpd2_name is not None:
+            okpd2_name = str(okpd2_name).strip()
+            if okpd2_name and okpd2_name != name:
+                parts.append(f"Категория: {okpd2_name}")
 
         # Добавляем обязательные характеристики
         characteristics = tender_item.get('characteristics', [])
         required_chars = [c for c in characteristics if c.get('required', False)]
 
         for char in required_chars[:5]:  # Максимум 5 важных характеристик
-            char_name = char.get('name', '').strip()
-            char_value = self._clean_value(str(char.get('value', '')))
+            char_name = char.get('name')
+            if char_name is not None:
+                char_name = str(char_name).strip()
+            else:
+                char_name = ''
+
+            char_value = char.get('value')
+            if char_value is not None:
+                char_value = self._clean_value(str(char_value))
+            else:
+                char_value = ''
 
             if char_name and char_value:
                 parts.append(f"{char_name}: {char_value}")
@@ -73,25 +86,40 @@ class SemanticSearchService:
         parts = []
 
         # Название товара
-        title = product.get('sample_title', '').strip()
-        if title:
-            parts.append(f"Товар: {title}")
+        title = product.get('sample_title')
+        if title is not None:
+            title = str(title).strip()
+            if title:
+                parts.append(f"Товар: {title}")
 
         # OKPD2 название
-        okpd2_name = product.get('okpd2_name', '').strip()
-        if okpd2_name:
-            parts.append(f"Категория: {okpd2_name}")
+        okpd2_name = product.get('okpd2_name')
+        if okpd2_name is not None:
+            okpd2_name = str(okpd2_name).strip()
+            if okpd2_name:
+                parts.append(f"Категория: {okpd2_name}")
 
         # Бренд
-        brand = product.get('sample_brand', '').strip()
-        if brand:
-            parts.append(f"Бренд: {brand}")
+        brand = product.get('sample_brand')
+        if brand is not None:
+            brand = str(brand).strip()
+            if brand:
+                parts.append(f"Бренд: {brand}")
 
         # Стандартизированные атрибуты
         std_attrs = product.get('standardized_attributes', [])
         for attr in std_attrs[:5]:  # Максимум 5 атрибутов
-            attr_name = attr.get('standard_name', '').strip()
-            attr_value = self._clean_value(str(attr.get('standard_value', '')))
+            attr_name = attr.get('standard_name')
+            if attr_name is not None:
+                attr_name = str(attr_name).strip()
+            else:
+                attr_name = ''
+
+            attr_value = attr.get('standard_value')
+            if attr_value is not None:
+                attr_value = self._clean_value(str(attr_value))
+            else:
+                attr_value = ''
 
             if attr_name and attr_value:
                 parts.append(f"{attr_name}: {attr_value}")
@@ -101,11 +129,17 @@ class SemanticSearchService:
         important_attrs = ['тип', 'материал', 'модель', 'серия']
 
         for attr in non_std_attrs[:3]:
-            attr_name = attr.get('original_name', '').strip()
+            attr_name = attr.get('original_name')
+            if attr_name is None:
+                continue
+            attr_name = str(attr_name).strip()
+
             if any(imp in attr_name.lower() for imp in important_attrs):
-                attr_value = self._clean_value(str(attr.get('original_value', '')))
-                if attr_value:
-                    parts.append(f"{attr_name}: {attr_value}")
+                attr_value = attr.get('original_value')
+                if attr_value is not None:
+                    attr_value = self._clean_value(str(attr_value))
+                    if attr_value:
+                        parts.append(f"{attr_name}: {attr_value}")
 
         return ". ".join(parts)
 
@@ -118,7 +152,7 @@ class SemanticSearchService:
         # Убираем операторы сравнения
         value = re.sub(r'[≥≤<>]=?', '', value)
 
-        # Убираем "ШТ", "ММ" и т.д. в конце
+        # Убираем единицы измерения в конце
         value = re.sub(r'\s+(шт|мм|см|м|кг|г|л|мл)\.?$', '', value, flags=re.IGNORECASE)
 
         # Нормализуем пробелы

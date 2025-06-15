@@ -474,6 +474,7 @@ class TenderMatchingService:
                 )
 
             processing_stats['candidates_found'] = len(products)
+            logger.info(f"candidates_found: {products[::20]}")
 
             if not products:
                 logger.warning(f"No products found for enhanced search")
