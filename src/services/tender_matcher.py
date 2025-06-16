@@ -48,6 +48,9 @@ class TenderMatchingService:
         Парсить числовое условие из строки
         Возвращает: (оператор, значение1, значение2_опционально)
         """
+        if not value:
+            return 'string', '', None
+
         value = value.strip()
 
         # Паттерны для разных условий
@@ -75,6 +78,9 @@ class TenderMatchingService:
 
     def check_numeric_match(self, tender_value: str, product_value: str) -> bool:
         """Проверить соответствие числовых значений"""
+        if not tender_value or not product_value:
+            return False
+
         tender_op, tender_val1, tender_val2 = self.parse_numeric_condition(tender_value)
         product_op, product_val1, product_val2 = self.parse_numeric_condition(product_value)
 
@@ -137,12 +143,12 @@ class TenderMatchingService:
         total_score = 0.0
 
         # 1. Проверяем OKPD2 код (обязательное условие)
-        if not tender_item.okpd2Code or not product['okpd2_code'].startswith(tender_item.okpd2Code):
+        if not tender_item.okpd2Code or not product.get('okpd2_code', '').startswith(tender_item.okpd2Code):
             return 0.0, {
                 "matched": False,
                 "reason": "OKPD2 code mismatch",
                 "tender_okpd2": tender_item.okpd2Code,
-                "product_okpd2": product['okpd2_code']
+                "product_okpd2": product.get('okpd2_code', '')
             }
 
         # Если нет характеристик у товара - базовое совпадение по OKPD2
@@ -156,14 +162,15 @@ class TenderMatchingService:
             }
 
         # 2. Сопоставляем характеристики (БЕЗ НОРМАЛИЗАЦИИ - уже стандартизированы)
-        tender_chars = {
-            ch.name: ch  # Используем имя как есть
-            for ch in tender_item.characteristics
-        }
+        tender_chars = {}
+        for ch in tender_item.characteristics:
+            if ch.name:  # Проверяем что name не None
+                tender_chars[ch.name] = ch
 
         product_attrs = {
             attr.get('standard_name', ''): attr
             for attr in product.get('standardized_attributes', [])
+            if attr.get('standard_name')  # Исключаем None/пустые значения
         }
 
         # Проверяем обязательные характеристики
@@ -175,44 +182,47 @@ class TenderMatchingService:
                 product_attr = product_attrs[char_name]
 
                 # Сравниваем значения
-                if tender_char.type == "Количественная":
-                    if self.check_numeric_match(tender_char.value, str(product_attr.get('standard_value', ''))):
-                        matched_attributes.append({
-                            "name": char_name,
-                            "tender_value": tender_char.value,
-                            "product_value": product_attr.get('standard_value'),
-                            "unit": tender_char.unit
-                        })
-                        total_score += 1.0
-                    else:
-                        missing_attributes.append({
-                            "name": char_name,
-                            "tender_value": tender_char.value,
-                            "product_value": product_attr.get('standard_value'),
-                            "reason": "value mismatch"
-                        })
+                if tender_char.type == "Количественная" and tender_char.value:
+                    product_value = product_attr.get('standard_value')
+                    if product_value is not None:
+                        if self.check_numeric_match(tender_char.value, str(product_value)):
+                            matched_attributes.append({
+                                "name": char_name,
+                                "tender_value": tender_char.value,
+                                "product_value": product_value,
+                                "unit": tender_char.unit
+                            })
+                            total_score += 1.0
+                        else:
+                            missing_attributes.append({
+                                "name": char_name,
+                                "tender_value": tender_char.value,
+                                "product_value": product_value,
+                                "reason": "value mismatch"
+                            })
                 else:  # Качественная
-                    tender_val = str(tender_char.value).strip()
-                    product_val = str(product_attr.get('standard_value', '')).strip()
+                    if tender_char.value is not None:
+                        tender_val = str(tender_char.value).strip()
+                        product_val = str(product_attr.get('standard_value', '')).strip()
 
-                    if tender_val == product_val or "эквивалент" in tender_val.lower():
-                        matched_attributes.append({
-                            "name": char_name,
-                            "tender_value": tender_char.value,
-                            "product_value": product_attr.get('standard_value')
-                        })
-                        total_score += 1.0
-                    else:
-                        missing_attributes.append({
-                            "name": char_name,
-                            "tender_value": tender_char.value,
-                            "product_value": product_attr.get('standard_value'),
-                            "reason": "value mismatch"
-                        })
+                        if tender_val == product_val or "эквивалент" in tender_val.lower():
+                            matched_attributes.append({
+                                "name": char_name,
+                                "tender_value": tender_char.value,
+                                "product_value": product_attr.get('standard_value')
+                            })
+                            total_score += 1.0
+                        else:
+                            missing_attributes.append({
+                                "name": char_name,
+                                "tender_value": tender_char.value,
+                                "product_value": product_attr.get('standard_value'),
+                                "reason": "value mismatch"
+                            })
             else:
                 missing_attributes.append({
                     "name": char_name,
-                    "tender_value": tender_char.value,
+                    "tender_value": tender_char.value if tender_char.value else "N/A",
                     "reason": "not found in product"
                 })
 
@@ -239,6 +249,9 @@ class TenderMatchingService:
         """
         Интеллектуальный поиск товаров по OKPD2 с расширением области поиска
         """
+        if not okpd2_code:
+            return []
+
         # Проверяем кэш
         if self._okpd2_cache is not None and okpd2_code in self._okpd2_cache:
             cached_data, cache_time = self._okpd2_cache[okpd2_code]
@@ -318,6 +331,19 @@ class TenderMatchingService:
     async def match_tender_item(self, tender_item: TenderItem) -> TenderItemMatch:
         """Найти подходящие товары для позиции тендера"""
 
+        # Проверяем обязательные поля
+        if not tender_item.okpd2Code:
+            return TenderItemMatch(
+                tender_item_id=tender_item.id,
+                tender_item_name=tender_item.name,
+                okpd2_code="",
+                matched_products=[],
+                total_matches=0,
+                best_match_score=0.0,
+                processing_status="no_matches",
+                error_message="No OKPD2 code provided"
+            )
+
         # Если семантический поиск включен - используем улучшенный алгоритм
         if self.enable_semantic_search and hasattr(self, 'term_extractor'):
             return await self._match_tender_item_enhanced(tender_item)
@@ -328,21 +354,26 @@ class TenderMatchingService:
     async def _match_tender_item_standard(self, tender_item: TenderItem) -> TenderItemMatch:
         """Стандартный алгоритм поиска (оригинальный)"""
         try:
-            logger.info(f"Matching tender item {tender_item.id}: {tender_item.name}")
+            # Обрабатываем None значения
+            item_id = tender_item.id if tender_item.id is not None else 0
+            item_name = tender_item.name if tender_item.name else "Без названия"
+            okpd2_code = tender_item.okpd2Code if tender_item.okpd2Code else ""
+
+            logger.info(f"Matching tender item {item_id}: {item_name}")
 
             # Используем улучшенный поиск с fallback
             products = await self.find_products_by_okpd2_with_fallback(
-                okpd2_code=tender_item.okpd2Code,
+                okpd2_code=okpd2_code,
                 min_results=settings.min_products_for_matching,
                 max_results=settings.max_matched_products_per_item * 10
             )
 
             if not products:
-                logger.warning(f"No products found for OKPD2 code {tender_item.okpd2Code}")
+                logger.warning(f"No products found for OKPD2 code {okpd2_code}")
                 return TenderItemMatch(
-                    tender_item_id=tender_item.id,
-                    tender_item_name=tender_item.name,
-                    okpd2_code=tender_item.okpd2Code,
+                    tender_item_id=item_id,
+                    tender_item_name=item_name,
+                    okpd2_code=okpd2_code,
                     matched_products=[],
                     total_matches=0,
                     best_match_score=0.0,
@@ -363,7 +394,7 @@ class TenderMatchingService:
                 matched_suppliers = []
                 for supplier in product.get('unique_suppliers', []):
                     # Проверяем цену
-                    tender_price = tender_item.unitPrice.get('amount', 0)
+                    tender_price = tender_item.unitPrice.get('amount', 0) if tender_item.unitPrice else 0
                     supplier_offers = supplier.get('supplier_offers', [])
 
                     best_price = None
@@ -420,9 +451,9 @@ class TenderMatchingService:
             matched_products = matched_products[:settings.max_matched_products_per_item]
 
             return TenderItemMatch(
-                tender_item_id=tender_item.id,
-                tender_item_name=tender_item.name,
-                okpd2_code=tender_item.okpd2Code,
+                tender_item_id=item_id,
+                tender_item_name=item_name,
+                okpd2_code=okpd2_code,
                 matched_products=matched_products,
                 total_matches=len(matched_products),
                 best_match_score=matched_products[0].match_score if matched_products else 0.0,
@@ -433,8 +464,8 @@ class TenderMatchingService:
             logger.error(f"Error matching tender item {tender_item.id}: {e}", exc_info=True)
             return TenderItemMatch(
                 tender_item_id=tender_item.id,
-                tender_item_name=tender_item.name,
-                okpd2_code=tender_item.okpd2Code,
+                tender_item_name=tender_item.name if tender_item.name else "Без названия",
+                okpd2_code=tender_item.okpd2Code if tender_item.okpd2Code else "",
                 matched_products=[],
                 total_matches=0,
                 best_match_score=0.0,
@@ -449,7 +480,12 @@ class TenderMatchingService:
         processing_stats = {}
 
         try:
-            logger.info(f"Enhanced matching for item {tender_item.id}: {tender_item.name}")
+            # Обрабатываем None значения
+            item_id = tender_item.id if tender_item.id is not None else 0
+            item_name = tender_item.name if tender_item.name else "Без названия"
+            okpd2_code = tender_item.okpd2Code if tender_item.okpd2Code else ""
+
+            logger.info(f"Enhanced matching for item {item_id}: {item_name}")
 
             # ЭТАП 1: Извлечение терминов
             search_terms = self.term_extractor.extract_from_tender_item(tender_item.dict())
@@ -460,7 +496,7 @@ class TenderMatchingService:
             # Проверяем поддержку расширенного поиска
             if hasattr(self.unique_products_store, 'find_products_enhanced'):
                 products = await self.unique_products_store.find_products_enhanced(
-                    okpd2_code=tender_item.okpd2Code,
+                    okpd2_code=okpd2_code,
                     search_terms=search_terms.get('all_terms', []),
                     weighted_terms=search_terms.get('weighted_terms', {}),
                     limit=1000
@@ -468,20 +504,19 @@ class TenderMatchingService:
             else:
                 # Fallback на стандартный поиск
                 products = await self.find_products_by_okpd2_with_fallback(
-                    okpd2_code=tender_item.okpd2Code,
+                    okpd2_code=okpd2_code,
                     min_results=100,
                     max_results=1000
                 )
 
             processing_stats['candidates_found'] = len(products)
-            logger.info(f"candidates_found: {products[::20]}")
 
             if not products:
                 logger.warning(f"No products found for enhanced search")
                 return TenderItemMatch(
-                    tender_item_id=tender_item.id,
-                    tender_item_name=tender_item.name,
-                    okpd2_code=tender_item.okpd2Code,
+                    tender_item_id=item_id,
+                    tender_item_name=item_name,
+                    okpd2_code=okpd2_code,
                     matched_products=[],
                     total_matches=0,
                     best_match_score=0.0,
@@ -525,7 +560,7 @@ class TenderMatchingService:
                     # Обрабатываем поставщиков
                     matched_suppliers = []
                     for supplier in product.get('unique_suppliers', []):
-                        tender_price = tender_item.unitPrice.get('amount', 0)
+                        tender_price = tender_item.unitPrice.get('amount', 0) if tender_item.unitPrice else 0
                         best_price = self._get_best_supplier_price(supplier)
 
                         supplier_score = final_score
@@ -578,9 +613,9 @@ class TenderMatchingService:
             processing_stats['processing_time'] = time.time() - start_time
 
             return TenderItemMatch(
-                tender_item_id=tender_item.id,
-                tender_item_name=tender_item.name,
-                okpd2_code=tender_item.okpd2Code,
+                tender_item_id=item_id,
+                tender_item_name=item_name,
+                okpd2_code=okpd2_code,
                 matched_products=matched_products,
                 total_matches=len(matched_products),
                 best_match_score=matched_products[0].match_score if matched_products else 0.0,
@@ -610,7 +645,15 @@ class TenderMatchingService:
 
     async def process_tender_sequential(self, tender_request: TenderRequest) -> TenderMatchingResult:
         """Последовательная обработка тендера (для небольших тендеров)"""
-        logger.info(f"Processing tender {tender_request.tenderInfo.tenderNumber} (sequential mode)")
+        # Получаем значения с обработкой None
+        tender_number = None
+        tender_name = None
+
+        if tender_request.tenderInfo:
+            tender_number = tender_request.tenderInfo.tenderNumber
+            tender_name = tender_request.tenderInfo.tenderName
+
+        logger.info(f"Processing tender {tender_number or 'No number'} (sequential mode)")
         start_time = datetime.utcnow()
 
         # Обрабатываем каждый товар
@@ -665,8 +708,8 @@ class TenderMatchingService:
                 summary["total_semantic_filtered"] = total_filtered
 
         return TenderMatchingResult(
-            tender_number=tender_request.tenderInfo.tenderNumber,
-            tender_name=tender_request.tenderInfo.tenderName,
+            tender_number=tender_number,
+            tender_name=tender_name,
             processing_time=datetime.utcnow(),
             total_items=total_items,
             matched_items=matched_items,
@@ -676,7 +719,15 @@ class TenderMatchingService:
 
     async def process_tender_parallel(self, tender_request: TenderRequest) -> TenderMatchingResult:
         """Параллельная обработка тендера (для больших тендеров)"""
-        logger.info(f"Processing tender {tender_request.tenderInfo.tenderNumber} (parallel mode)")
+        # Получаем значения с обработкой None
+        tender_number = None
+        tender_name = None
+
+        if tender_request.tenderInfo:
+            tender_number = tender_request.tenderInfo.tenderNumber
+            tender_name = tender_request.tenderInfo.tenderName
+
+        logger.info(f"Processing tender {tender_number or 'No number'} (parallel mode)")
         start_time = datetime.utcnow()
 
         # Фильтруем товары с OKPD2
@@ -684,8 +735,8 @@ class TenderMatchingService:
 
         if not valid_items:
             return TenderMatchingResult(
-                tender_number=tender_request.tenderInfo.tenderNumber,
-                tender_name=tender_request.tenderInfo.tenderName,
+                tender_number=tender_number,
+                tender_name=tender_name,
                 processing_time=datetime.utcnow(),
                 total_items=0,
                 matched_items=0,
@@ -716,8 +767,8 @@ class TenderMatchingService:
                     # Создаем результат с ошибкой
                     all_matches.append(TenderItemMatch(
                         tender_item_id=batch[idx].id,
-                        tender_item_name=batch[idx].name,
-                        okpd2_code=batch[idx].okpd2Code,
+                        tender_item_name=batch[idx].name if batch[idx].name else "Без названия",
+                        okpd2_code=batch[idx].okpd2Code if batch[idx].okpd2Code else "",
                         matched_products=[],
                         total_matches=0,
                         best_match_score=0.0,
@@ -764,8 +815,8 @@ class TenderMatchingService:
         )
 
         return TenderMatchingResult(
-            tender_number=tender_request.tenderInfo.tenderNumber,
-            tender_name=tender_request.tenderInfo.tenderName,
+            tender_number=tender_number,
+            tender_name=tender_name,
             processing_time=datetime.utcnow(),
             total_items=total_items,
             matched_items=matched_items,
