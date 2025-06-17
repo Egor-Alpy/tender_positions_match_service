@@ -1,0 +1,65 @@
+stages:
+  - build
+  - test
+  - update-helm
+
+before_script:
+  - export CI_APPLICATION_TAG=$CI_PIPELINE_ID-$CI_COMMIT_SHA
+
+build:
+  stage: build
+  image: "registry.gitlab.com/gitlab-org/cluster-integration/auto-build-image:v4.11.1"
+  services:
+    - name: docker:dind
+      command: ["--tls=false", "--host=tcp://0.0.0.0:2375"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+  script:
+    - |
+      export CI_APPLICATION_REPOSITORY=$CI_REGISTRY_IMAGE/$CI_COMMIT_REF_NAME
+      /build/build.sh
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == 'merge_request_event'
+
+include:
+  - template: Jobs/Container-Scanning.gitlab-ci.yml # https://gitlab.com/gitlab-org/gitlab/blob/master/lib/gitlab/ci/templates/Jobs/Container-Scanning.gitlab-ci.yml
+  - template: Jobs/Secret-Detection.gitlab-ci.yml # https://gitlab.com/gitlab-org/gitlab/blob/master/lib/gitlab/ci/templates/Jobs/Secret-Detection.gitlab-ci.yml
+  - template: Jobs/SAST.gitlab-ci.yml # https://gitlab.com/gitlab-org/gitlab/blob/master/lib/gitlab/ci/templates/Jobs/SAST.gitlab-ci.yml
+
+update-helm-chart:
+  stage: update-helm
+  image: alpine/curl
+  needs: ["build"]
+  variables:
+    HELM_PROJECT_ID: "14" # helm-charts repo
+  script:
+    - |
+      echo "Triggering helm chart update pipeline..."
+      response=$(curl -X POST \
+        --fail \
+        --silent \
+        --show-error \
+        -F token=$HELM_TRIGGER_TOKEN \
+        -F ref=main \
+        -F "variables[APP_NAME]=tender-positions-match-service" \
+        -F "variables[IMAGE_TAG]=$CI_APPLICATION_TAG" \
+        -F "variables[TRIGGERED_BY_PROJECT]=$CI_PROJECT_NAME" \
+        -F "variables[TRIGGERED_BY_PIPELINE]=$CI_PIPELINE_URL" \
+        "https://$CI_SERVER_HOST/api/v4/projects/$HELM_PROJECT_ID/trigger/pipeline")
+
+      echo "Pipeline triggered successfully"
+      echo "Response: $response"
+
+      # Extract pipeline ID from response for tracking
+      pipeline_id=$(echo $response | grep -o '"id":[0-9]*' | head -1 | cut -d':' -f2)
+      echo "Triggered pipeline ID: $pipeline_id"
+      echo "Pipeline URL: https://$CI_SERVER_HOST/tenders-ai/helm-charts/-/pipelines/$pipeline_id"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  retry:
+    max: 2
+    when:
+      - api_failure
+      - runner_system_failure
