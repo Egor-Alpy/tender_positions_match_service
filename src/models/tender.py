@@ -22,7 +22,7 @@ class TenderItem(BaseModel):
     name: Optional[str] = None
     okpd2Code: Optional[str] = Field(default=None, alias="okpd2Code")
     ktruCode: Optional[str] = Field(default=None, alias="ktruCode")
-    quantity: Optional[int] = None
+    quantity: Optional[float] = None
     unitOfMeasurement: Optional[str] = None
     unitPrice: Optional[Dict[str, Any]] = None
     totalPrice: Optional[Dict[str, Any]] = None
@@ -101,7 +101,7 @@ class TenderItemMatch(BaseModel):
     tender_item_name: Optional[str] = None
     okpd2_code: Optional[str] = None
     matched_products: List[MatchedProduct] = Field(default_factory=list)
-    total_matches: int = 0
+    total_matches: float = 0
     best_match_score: float = 0.0
     processing_status: str = "success"  # success, no_matches, error
     error_message: Optional[str] = None
