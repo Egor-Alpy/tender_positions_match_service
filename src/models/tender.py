@@ -112,6 +112,7 @@ class TenderMatchingResult(BaseModel):
     """Результат обработки тендера"""
     tender_number: Optional[str] = None
     tender_name: Optional[str] = None
+    tender_max_price: Optional[float] = None
     processing_time: datetime = Field(default_factory=datetime.utcnow)
     total_items: int = 0
     matched_items: int = 0

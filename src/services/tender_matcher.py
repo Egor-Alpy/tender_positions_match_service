@@ -479,10 +479,14 @@ class TenderMatchingService:
         # Получаем значения с обработкой None
         tender_number = None
         tender_name = None
+        tender_max_price = None
 
         if tender_request.tenderInfo:
             tender_number = tender_request.tenderInfo.tenderNumber
             tender_name = tender_request.tenderInfo.tenderName
+            # Извлекаем максимальную цену тендера
+            if tender_request.tenderInfo.maxPrice and isinstance(tender_request.tenderInfo.maxPrice, dict):
+                tender_max_price = tender_request.tenderInfo.maxPrice.get('amount')
 
         logger.info(f"Processing tender {tender_number or 'No number'} (sequential mode)")
         start_time = datetime.utcnow()
@@ -541,6 +545,7 @@ class TenderMatchingService:
         return TenderMatchingResult(
             tender_number=tender_number,
             tender_name=tender_name,
+            tender_max_price=tender_max_price,
             processing_time=datetime.utcnow(),
             total_items=total_items,
             matched_items=matched_items,
@@ -553,10 +558,14 @@ class TenderMatchingService:
         # Получаем значения с обработкой None
         tender_number = None
         tender_name = None
+        tender_max_price = None
 
         if tender_request.tenderInfo:
             tender_number = tender_request.tenderInfo.tenderNumber
             tender_name = tender_request.tenderInfo.tenderName
+            # Извлекаем максимальную цену тендера
+            if tender_request.tenderInfo.maxPrice and isinstance(tender_request.tenderInfo.maxPrice, dict):
+                tender_max_price = tender_request.tenderInfo.maxPrice.get('amount')
 
         logger.info(f"Processing tender {tender_number or 'No number'} (parallel mode)")
         start_time = datetime.utcnow()
@@ -568,6 +577,7 @@ class TenderMatchingService:
             return TenderMatchingResult(
                 tender_number=tender_number,
                 tender_name=tender_name,
+                tender_max_price=tender_max_price,
                 processing_time=datetime.utcnow(),
                 total_items=0,
                 matched_items=0,
@@ -648,6 +658,7 @@ class TenderMatchingService:
         return TenderMatchingResult(
             tender_number=tender_number,
             tender_name=tender_name,
+            tender_max_price=tender_max_price,
             processing_time=datetime.utcnow(),
             total_items=total_items,
             matched_items=matched_items,
