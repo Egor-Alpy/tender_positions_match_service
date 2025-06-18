@@ -35,8 +35,8 @@ class TenderMatchingService:
             try:
                 self.term_extractor = TenderTermExtractor()
                 self.semantic_service = SemanticSearchService()
-                self.attribute_matcher = EnhancedAttributeMatcher()
-                logger.info("Семантический поиск включен")
+                # ОТКЛЮЧЕНО: self.attribute_matcher = EnhancedAttributeMatcher()
+                logger.info("Семантический поиск включен (без проверки характеристик)")
             except Exception as e:
                 logger.warning(f"Не удалось инициализировать семантический поиск: {e}")
                 self.enable_semantic_search = False
@@ -125,134 +125,14 @@ class TenderMatchingService:
         Возвращает: (score, match_details)
         """
 
-        # Если включен улучшенный матчер - используем его
-        if self.enable_semantic_search and hasattr(self, 'attribute_matcher'):
-            match_result = self.attribute_matcher.match_characteristics(
-                tender_item.dict(),
-                product
-            )
-
-            if match_result['is_suitable']:
-                return match_result['match_score'], match_result
-            else:
-                return 0.0, match_result
-
-        # Иначе используем старую логику
-        matched_attributes = []
-        missing_attributes = []
-        total_score = 0.0
-
-        # 1. Проверяем OKPD2 код (временно отключено)
-        # if not tender_item.okpd2Code or not product.get('okpd2_code', '').startswith(tender_item.okpd2Code):
-        #     return 0.0, {
-        #         "matched": False,
-        #         "reason": "OKPD2 code mismatch",
-        #         "tender_okpd2": tender_item.okpd2Code,
-        #         "product_okpd2": product.get('okpd2_code', '')
-        #     }
-
-        # Если нет характеристик у товара - базовое совпадение по OKPD2
-        if not tender_item.characteristics:
-            return 0.5, {  # Базовый score 50% только за совпадение OKPD2
-                "matched_attributes": [],
-                "missing_attributes": [],
-                "total_required": 0,
-                "total_matched": 0,
-                "note": "No characteristics to match, OKPD2 match only"
-            }
-
-        # 2. Сопоставляем характеристики (БЕЗ НОРМАЛИЗАЦИИ - уже стандартизированы)
-        tender_chars = {}
-        for ch in tender_item.characteristics:
-            if ch.name:  # Проверяем что name не None
-                tender_chars[ch.name] = ch
-
-        product_attrs = {
-            attr.get('standard_name', ''): attr
-            for attr in product.get('standardized_attributes', [])
-            if attr.get('standard_name')  # Исключаем None/пустые значения
-        }
-
-        # МЯГКАЯ проверка характеристик - учитываем ВСЕ характеристики (обязательные и необязательные)
-        for char_name, tender_char in tender_chars.items():
-            if char_name in product_attrs:
-                product_attr = product_attrs[char_name]
-                score_weight = 1.0 if tender_char.required else 0.5  # Необязательные дают меньший вес
-
-                # Сравниваем значения
-                if tender_char.type == "Количественная" and tender_char.value:
-                    product_value = product_attr.get('standard_value')
-                    if product_value is not None:
-                        if self.check_numeric_match(tender_char.value, str(product_value)):
-                            matched_attributes.append({
-                                "name": char_name,
-                                "tender_value": tender_char.value,
-                                "product_value": product_value,
-                                "unit": tender_char.unit,
-                                "required": tender_char.required
-                            })
-                            total_score += score_weight
-                        else:
-                            # В мягком режиме даже неточные совпадения дают небольшой бонус
-                            total_score += score_weight * 0.2
-                            missing_attributes.append({
-                                "name": char_name,
-                                "tender_value": tender_char.value,
-                                "product_value": product_value,
-                                "reason": "value mismatch (partial credit given)"
-                            })
-                else:  # Качественная
-                    if tender_char.value is not None:
-                        tender_val = str(tender_char.value).strip().lower()
-                        product_val = str(product_attr.get('standard_value', '')).strip().lower()
-
-                        # Мягкое сравнение - точное совпадение, эквивалент, или частичное совпадение
-                        if (tender_val == product_val or 
-                            "эквивалент" in tender_val or
-                            tender_val in product_val or 
-                            product_val in tender_val):
-                            matched_attributes.append({
-                                "name": char_name,
-                                "tender_value": tender_char.value,
-                                "product_value": product_attr.get('standard_value'),
-                                "required": tender_char.required
-                            })
-                            total_score += score_weight
-                        else:
-                            # Даже при несовпадении даем небольшой бонус за наличие характеристики
-                            total_score += score_weight * 0.1
-                            missing_attributes.append({
-                                "name": char_name,
-                                "tender_value": tender_char.value,
-                                "product_value": product_attr.get('standard_value'),
-                                "reason": "value mismatch (partial credit given)"
-                            })
-            else:
-                # Если характеристика вообще не найдена - никакого бонуса
-                missing_attributes.append({
-                    "name": char_name,
-                    "tender_value": tender_char.value if tender_char.value else "N/A",
-                    "reason": "not found in product"
-                })
-
-        # МЯГКИЙ расчет итогового score
-        total_characteristics = len(tender_chars)
-        required_count = sum(1 for ch in tender_item.characteristics if ch.required)
-        
-        if total_characteristics > 0:
-            # Базовый score 0.3 + бонус за совпадения
-            base_score = 0.3
-            characteristics_score = (total_score / total_characteristics) * 0.7
-            match_score = base_score + characteristics_score
-        else:
-            # Если нет характеристик - средний score
-            match_score = 0.6
-
-        return match_score, {
-            "matched_attributes": matched_attributes,
-            "missing_attributes": missing_attributes,
-            "total_required": required_count,
-            "total_matched": len(matched_attributes)
+        # ОТКЛЮЧЕНА ПРОВЕРКА ХАРАКТЕРИСТИК - все товары получают базовый score
+        # Возвращаем фиксированный score 0.8 для всех товаров
+        return 0.8, {
+            "matched_attributes": [],
+            "missing_attributes": [],
+            "total_required": 0,
+            "total_matched": 0,
+            "note": "Characteristics matching disabled - all products get base score"
         }
 
     async def find_products_by_okpd2_with_fallback(
@@ -341,7 +221,8 @@ class TenderMatchingService:
                 matched_suppliers = []
                 for supplier in product.get('unique_suppliers', []):
                     # Проверяем цену
-                    tender_price = tender_item.unitPrice.get('amount', 0) if tender_item.unitPrice else 0
+                    tender_price = tender_item.unitPrice.get('amount') if tender_item.unitPrice else None
+                    tender_price = tender_price if tender_price is not None else 0
                     supplier_offers = supplier.get('supplier_offers', [])
 
                     best_price = None
@@ -509,7 +390,8 @@ class TenderMatchingService:
                     # Обрабатываем поставщиков
                     matched_suppliers = []
                     for supplier in product.get('unique_suppliers', []):
-                        tender_price = tender_item.unitPrice.get('amount', 0) if tender_item.unitPrice else 0
+                        tender_price = tender_item.unitPrice.get('amount') if tender_item.unitPrice else None
+                        tender_price = tender_price if tender_price is not None else 0
                         best_price = self._get_best_supplier_price(supplier)
 
                         supplier_score = final_score
