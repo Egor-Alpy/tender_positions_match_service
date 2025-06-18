@@ -4,6 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src.api.endpoints import tender_matching
+from src.api.v2 import tender_matching as tender_matching_v2
 from src.core.config import settings
 from src.core.logging_config import setup_app_logging
 
@@ -34,6 +35,11 @@ app = FastAPI(
     description="""
     Сервис сопоставления товаров из тендеров с товарами из базы данных.
 
+    ## Версии API
+
+    * **API v1** - Оригинальная версия с базовой структурой ответа
+    * **API v2** - Расширенная версия с детальной информацией о поставщиках и метриками
+
     ## Возможности
 
     * **Полная обработка тендеров** - обработка всего тендера с множеством товаров
@@ -47,7 +53,7 @@ app = FastAPI(
     1. **Стандартный**: OKPD2 → Характеристики → Поставщики
     2. **Улучшенный**: Извлечение терминов → Семантический поиск → Точное сопоставление
     """,
-    version="1.2.0",
+    version="2.0.0",
     lifespan=lifespan,
     docs_url="/docs",
     redoc_url="/redoc"
@@ -63,10 +69,18 @@ app.add_middleware(
 )
 
 # Подключение роутеров
+# API v1 (оригинальная версия)
 app.include_router(
     tender_matching.router,
     prefix="/api/v1/tenders",
-    tags=["tender_matching"]
+    tags=["tender_matching_v1"]
+)
+
+# API v2 (новая версия с расширенной структурой)
+app.include_router(
+    tender_matching_v2.router,
+    prefix="/api/v2/tenders",
+    tags=["tender_matching_v2"]
 )
 
 
@@ -77,7 +91,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "Tender Matching Service",
-        "version": "1.2.0"
+        "version": "2.0.0"
     }
 
 
@@ -87,7 +101,7 @@ async def root():
     """Корневой эндпоинт с информацией о сервисе"""
     return {
         "service": "Tender Matching Service",
-        "version": "1.2.0",
+        "version": "2.0.0",
         "docs": "/docs",
         "description": "Сервис сопоставления товаров из тендеров с товарами из базы данных",
         "features": [
@@ -95,40 +109,68 @@ async def root():
             "Тестирование отдельных товаров",
             "Пакетная обработка",
             "Семантический поиск (ML)",
-            "Интеллектуальное сопоставление характеристик"
+            "Интеллектуальное сопоставление характеристик",
+            "Две версии API (v1 и v2)"
         ],
+        "api_versions": {
+            "v1": {
+                "description": "Оригинальная версия API",
+                "base_path": "/api/v1/tenders"
+            },
+            "v2": {
+                "description": "Расширенная версия с детальной информацией",
+                "base_path": "/api/v2/tenders",
+                "changes": [
+                    "Добавлена информация о максимальной цене тендера",
+                    "Расширенная структура данных о поставщиках",
+                    "Дополнительные метрики обработки",
+                    "Улучшенная структура ответа"
+                ]
+            }
+        },
         "endpoints": {
-            "match_tender": {
-                "method": "POST",
-                "path": "/api/v1/tenders/match",
-                "description": "Обработать полный тендер"
+            "v1": {
+                "match_tender": {
+                    "method": "POST",
+                    "path": "/api/v1/tenders/match",
+                    "description": "Обработать полный тендер"
+                },
+                "match_single_item": {
+                    "method": "POST",
+                    "path": "/api/v1/tenders/match-item",
+                    "description": "Тестировать один товар",
+                    "params": ["use_semantic", "semantic_threshold", "max_results"]
+                },
+                "match_multiple_items": {
+                    "method": "POST",
+                    "path": "/api/v1/tenders/match-items",
+                    "description": "Обработать несколько товаров",
+                    "params": ["use_semantic", "semantic_threshold", "max_results_per_item"]
+                },
+                "analyze_item": {
+                    "method": "POST",
+                    "path": "/api/v1/tenders/analyze-item",
+                    "description": "Анализировать товар (отладка)"
+                },
+                "service_status": {
+                    "method": "GET",
+                    "path": "/api/v1/tenders/status",
+                    "description": "Статус сервиса и статистика"
+                }
             },
-            "match_single_item": {
-                "method": "POST",
-                "path": "/api/v1/tenders/match-item",
-                "description": "Тестировать один товар (NEW!)",
-                "params": ["use_semantic", "semantic_threshold", "max_results"]
+            "v2": {
+                "match_tender": {
+                    "method": "POST",
+                    "path": "/api/v2/tenders/match",
+                    "description": "Обработать полный тендер (расширенный формат)"
+                }
             },
-            "match_multiple_items": {
-                "method": "POST",
-                "path": "/api/v1/tenders/match-items",
-                "description": "Обработать несколько товаров (NEW!)",
-                "params": ["use_semantic", "semantic_threshold", "max_results_per_item"]
-            },
-            "analyze_item": {
-                "method": "POST",
-                "path": "/api/v1/tenders/analyze-item",
-                "description": "Анализировать товар (отладка)"
-            },
-            "service_status": {
-                "method": "GET",
-                "path": "/api/v1/tenders/status",
-                "description": "Статус сервиса и статистика"
-            },
-            "health": {
-                "method": "GET",
-                "path": "/health",
-                "description": "Проверка здоровья"
+            "common": {
+                "health": {
+                    "method": "GET",
+                    "path": "/health",
+                    "description": "Проверка здоровья"
+                }
             }
         },
         "quick_start": {

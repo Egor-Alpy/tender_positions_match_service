@@ -1,0 +1,48 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.*
+
+# Logs
+logs/
+*.log
+
+# Test files
+test_*.py
+*_test.py
+compare_*.py
+simple_*.py
+
+# Response files
+*_response.json
+response_*.json
+
+# Docker
+docker-compose.local.yml
+docker-compose.override.yml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Examples and temporary files
+examples/
+temp/
+tmp/
